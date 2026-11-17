@@ -23,7 +23,7 @@ def web_search(query,max_results = 5):
         f"[{i+1}] {r['title']}\n链接：{r['href']}\n摘要：{r['body']}"
         for i, r in enumerate(result)
     )
-def read_page(url,max_chart = 3000):
+def read_page(url,focus,max_chart = 3000):
     try:
         html = trafilatura.fetch_url(url)
         text = trafilatura.extract(html) if html else None
@@ -31,9 +31,16 @@ def read_page(url,max_chart = 3000):
         return f"读取失败:{e}"
     if not text:
         return "无法提取正文"
+    resp = client.chat.completions.create(
+        model=MODEL,messages=[{"role":"user","content":f"从下面的网页内容中，提取和「{focus}」相关的事实，"
+            f"保留具体数字、日期、名称，用要点列出，不超过 300 字。"
+            f"如果没有相关内容，就回答“无相关内容”。\n\n{text[:max_chart]}"}] )
+    notes = resp.choices[0].message.content
     READ_URLS.append(url)
     n = len(READ_URLS)
-    return f"[来源 {n}]\n{text[:max_chart]}"
+    return f"[来源 {n}]\n{notes}"
+
+
 TOOL_MAP = {"web_search":web_search,"read_page":read_page}
 tools = [
 {"type": "function", "function": {
@@ -46,8 +53,10 @@ tools = [
         "name": "read_page",
         "description": "读取网页正文。搜索摘要信息不够详细时，用它读取全文。",
         "parameters": {"type": "object",
-                       "properties": {"url": {"type": "string", "description": "搜素网络链接"}},
-                       "required": ["url"]}}},
+                       "properties": {
+                           "url": {"type": "string", "description": "搜素网络链接"},
+                            "focus": {"type": "string","description": "想从这个网页里找什么信息"}},
+                       "required": ["url","focus"]}}},
 ]
 def run_agent(messages):
     READ_URLS.clear()
@@ -75,17 +84,50 @@ def run_agent(messages):
                 result = f"tool error: {e}"
             print(f"  [第{step + 1}步] {tc.function.name}({tc.function.arguments})")
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-    print("到达最大步数")
+    print("到达最大步数强制生成报告")
+    messages.append({"role":"user","content":"请停止搜索，根据目前已经获得的信息写最终报告。"})
+    resp = client.chat.completions.create(model=MODEL, messages=messages)
+    ans = resp.choices[0].message.content
+    print("AI:"+ans)
+    messages.append({"role": "assistant", "content": ans})
+    print("\n参考来源")
+    for i, url in enumerate(READ_URLS, 1):
+        print(f"[{i}] {url}")
+
+
+
+
+
 SYSTEM_PROMPT = """你是一个研究助手。
 - 先用 web_search 搜索，再用 read_page 阅读网页全文
 - 只根据读到的内容回答，不要编造
 - 关键事实后用 [编号] 标注出处，编号就是 read_page 结果开头的“来源 N”
 - 不要自己写参考来源列表"""
+
+def plan(question):
+    resp = client.chat.completions.create(
+        model=MODEL,
+        messages=[{"role": "user", "content":
+            f"把下面的研究问题拆成 2-4 个子问题，每个子问题都要能通过搜索回答。"
+            f'用 JSON 输出，格式：{{"sub_questions": ["...", "..."]}}\n\n问题：{question}'}],
+        response_format={"type": "json_object"},
+    )
+    subs = json.loads(resp.choices[0].message.content)["sub_questions"]
+    print("sub_questions:", subs)
+    for i,s in enumerate(subs):
+        print(f"  {i}. {s}")
+    return subs
+
 if __name__ == "__main__":
     messages = [{"role":"system","content":SYSTEM_PROMPT}]
     while True:
         q = input("\n你：")
         if q == "q":
             break
-        messages.append({"role": "user", "content": q})
+        subs = plan(q)
+        plan_text = "\n".join(f"{i}. {s}" for i, s in enumerate(subs, 1))
+        messages.append({"role": "user", "content":
+            f"{q}\n\n请按以下子问题依次研究：\n{plan_text}\n\n"
+            f"要求：每个子问题最多搜索 2 次、阅读 2 个网页。"
+            f"所有子问题都有答案后，立刻写最终报告。"})
         run_agent(messages)
