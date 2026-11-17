@@ -11,8 +11,14 @@ client = OpenAI(api_key=os.environ["DEEPSEEK_API_KEY"],
 MODEL = "deepseek-flash"
 MAX_STEPS = 10
 READ_URLS = []
+STATS = {"steps": 0, "tokens": 0}
 #-------tools--------------
+MAX_SEARCH  =  6
+SEARCH_COUNT = {"n": 0}
 def web_search(query,max_results = 5):
+    if SEARCH_COUNT["n"] >= MAX_SEARCH:
+        return f"已达到搜索上限（{MAX_SEARCH} 次），请根据已有信息写最终报告。"
+    SEARCH_COUNT["n"] += 1
     try:
         result = DDGS().text(query,max_results=max_results)
     except Exception as e:
@@ -23,7 +29,10 @@ def web_search(query,max_results = 5):
         f"[{i+1}] {r['title']}\n链接：{r['href']}\n摘要：{r['body']}"
         for i, r in enumerate(result)
     )
+MAX_PAGES = 5
 def read_page(url,focus,max_chart = 3000):
+    if len(READ_URLS) >= MAX_PAGES:
+        return f"已达到阅读上限（{MAX_PAGES} 页）"
     try:
         html = trafilatura.fetch_url(url)
         text = trafilatura.extract(html) if html else None
@@ -60,10 +69,14 @@ tools = [
 ]
 def run_agent(messages):
     READ_URLS.clear()
+    SEARCH_COUNT["n"] = 0
+    STATS["steps"], STATS["tokens"] = 0, 0
     for step in range(MAX_STEPS):
         resp = client.chat.completions.create(
             model=MODEL, messages=messages,tools=tools
         )
+        STATS["steps"]+=1
+        STATS["tokens"] += resp.usage.prompt_tokens
         print("prompt_tokens:"+str(resp.usage.prompt_tokens)+"-------completion_tokens:"+str(resp.usage.completion_tokens))
         msg = resp.choices[0].message
         if msg.content:
@@ -73,7 +86,7 @@ def run_agent(messages):
             print("\n参考来源")
             for i, url in enumerate(READ_URLS,1):
                 print(f"[{i}{url}]")
-            return
+            return msg.content
         messages.append({"role": "assistant", "content": msg.content,"tool_calls":[tc.model_dump() for tc in msg.tool_calls]})
 
         for tc in msg.tool_calls:
@@ -93,7 +106,7 @@ def run_agent(messages):
     print("\n参考来源")
     for i, url in enumerate(READ_URLS, 1):
         print(f"[{i}] {url}")
-
+    return ans
 
 
 
@@ -108,13 +121,16 @@ def plan(question):
     resp = client.chat.completions.create(
         model=MODEL,
         messages=[{"role": "user", "content":
-            f"把下面的研究问题拆成 2-4 个子问题，每个子问题都要能通过搜索回答。"
+            f"判断下面这个研究问题的复杂程度，拆成子问题：\n"
+            f"- 简单问题（单一概念、单一事实）：只输出 1 个子问题\n"
+            f"- 复杂问题（对比、多方面分析）：输出 2-3 个子问题\n"
+            f"每个子问题都要能通过搜索回答。"
             f'用 JSON 输出，格式：{{"sub_questions": ["...", "..."]}}\n\n问题：{question}'}],
         response_format={"type": "json_object"},
     )
     subs = json.loads(resp.choices[0].message.content)["sub_questions"]
     print("sub_questions:", subs)
-    for i,s in enumerate(subs):
+    for i,s in enumerate(subs,1):
         print(f"  {i}. {s}")
     return subs
 
@@ -128,6 +144,6 @@ if __name__ == "__main__":
         plan_text = "\n".join(f"{i}. {s}" for i, s in enumerate(subs, 1))
         messages.append({"role": "user", "content":
             f"{q}\n\n请按以下子问题依次研究：\n{plan_text}\n\n"
-            f"要求：每个子问题最多搜索 2 次、阅读 2 个网页。"
+            f"要求：整个研究最多阅读 5 页。"
             f"所有子问题都有答案后，立刻写最终报告。"})
         run_agent(messages)
