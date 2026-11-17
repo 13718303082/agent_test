@@ -134,6 +134,25 @@ def plan(question):
         print(f"  {i}. {s}")
     return subs
 
+def research(question):
+    subs = plan(question)
+    plan_text = "\n".join(f"{i}. {s}" for i, s in enumerate(subs, 1))
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content":
+            f"{question}\n\n请按以下子问题依次研究：\n{plan_text}\n\n"
+            f"要求：整个研究最多阅读 5 页。所有子问题都有答案后，立刻写最终报告。"},
+    ]
+    ans = run_agent(messages)
+    return {
+        "question": question,
+        "plan": subs,
+        "answer": ans,
+        "sources": list(READ_URLS),
+        "steps": STATS["steps"],
+        "tokens": STATS["tokens"],
+    }
+
 if __name__ == "__main__":
     messages = [{"role":"system","content":SYSTEM_PROMPT}]
     while True:
